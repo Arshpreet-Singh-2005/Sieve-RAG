@@ -1,0 +1,10 @@
+# Python environment and cache
+venv/
+env/
+__pycache__/
+
+# Node/Express dependencies
+node_modules/
+
+# Secrets and environment variables
+.env
