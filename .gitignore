@@ -1,10 +1,7 @@
-# Python environment and cache
-venv/
-env/
+.sieve/
+.venv/
 __pycache__/
-
-# Node/Express dependencies
-node_modules/
-
-# Secrets and environment variables
+*.pyc
 .env
+data/
+.pytest_cache/
