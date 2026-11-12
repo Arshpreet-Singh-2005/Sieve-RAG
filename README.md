@@ -13,6 +13,7 @@
 ---
 
 ## Table of Contents
+
 1. [Motivation & Problem Statement](#1-motivation--problem-statement)
 2. [System Architecture](#2-system-architecture)
 3. [Mathematical Foundations](#3-mathematical-foundations)
@@ -27,9 +28,10 @@
 ## 1. Motivation & Problem Statement
 
 Standard RAG pipelines that rely exclusively on dense bi-encoder embeddings frequently fail on technical, medical, and scientific corpora:
-- **The Lexical Gap in Dense Search:** Dense models (`all-MiniLM-L6-v2`) compress text into a 384-dimensional vector. While strong at capturing broad semantic similarity, they often blur exact biochemical identifiers, gene names, drug dosages, or numerical claims (e.g., *"0-dimensional biomaterials"* vs. *"3-dimensional scaffolds"*).
-- **The Semantic Gap in Sparse Search:** Pure keyword algorithms (`BM25Okapi`) excel at exact token matching but fail when a query paraphrases a scientific concept (e.g., *"myocardial infarction"* vs. *"heart attack"*).
-- **The Latency Bottleneck:** Re-computing vector searches and neural reranking for identical or slightly reworded user queries wastes compute and inflates tail latency.
+
+* **The Lexical Gap in Dense Search:** Dense models (`all-MiniLM-L6-v2`) compress text into a 384-dimensional vector. While strong at capturing broad semantic similarity, they often blur exact biochemical identifiers, gene names, drug dosages, or numerical claims (e.g., *"0-dimensional biomaterials"* vs. *"3-dimensional scaffolds"*).
+* **The Semantic Gap in Sparse Search:** Pure keyword algorithms (`BM25Okapi`) excel at exact token matching but fail when a query paraphrases a scientific concept (e.g., *"myocardial infarction"* vs. *"heart attack"*).
+* **The Latency Bottleneck:** Re-computing vector searches and neural reranking for identical or slightly reworded user queries wastes compute and inflates tail latency.
 
 **Sieve-RAG solves all three challenges** by fusing dense + sparse retrieval via scale-invariant **Reciprocal Rank Fusion (RRF)** and intercepting incoming queries with an in-memory **Redis Exact + Semantic Vector Cache**.
 
@@ -128,19 +130,28 @@ flowchart TD
 ## 3. Mathematical Foundations
 
 ### 1. L2-Normalized Cosine Similarity (Dense Retrieval & Semantic Cache)
+
 Both document embeddings (`title + text`) and incoming query embeddings are L2-normalized to unit length ($\|\mathbf{u}\|_2 = \|\mathbf{v}\|_2 = 1$). Consequently, cosine similarity simplifies to a fast inner dot product:
 
-$$\text{sim}(\mathbf{q}, \mathbf{d}) = \frac{\mathbf{q} \cdot \mathbf{d}}{\|\mathbf{q}\|_2 \|\mathbf{d}\|_2} = \sum_{i=1}^{384} q_i d_i$$
+$$
+\mathrm{sim}(\mathbf{q}, \mathbf{d}) = \frac{\mathbf{q} \cdot \mathbf{d}}{\|\mathbf{q}\|_2 \|\mathbf{d}\|_2} = \sum_{i=1}^{384} q_i d_i
+$$
 
 ### 2. BM25Okapi Scoring (Sparse Lexical Retrieval)
+
 For a query $Q$ containing tokens $q_1, q_2, \dots, q_n$, the BM25 score of document $D$ is:
 
-$$\text{BM25}(D, Q) = \sum_{i=1}^{n} \text{IDF}(q_i) \cdot \frac{f(q_i, D) \cdot (k_1 + 1)}{f(q_i, D) + k_1 \cdot \left(1 - b + b \cdot \frac{|D|}{\text{avgdl}}\right)}$$
+$$
+\mathrm{BM25}(D, Q) = \sum_{i=1}^{n} \mathrm{IDF}(q_i) \cdot \frac{f(q_i, D) \cdot (k_1 + 1)}{f(q_i, D) + k_1 \cdot \left(1 - b + b \cdot \frac{|D|}{\mathrm{avgdl}}\right)}
+$$
 
 ### 3. Reciprocal Rank Fusion (RRF)
-Because cosine similarity ($\in [-1, 1]$) and unbounded BM25 scores ($\in [0, \infty)$) lie on incompatible numerical scales, linear score combination requires fragile dataset-specific tuning. **Reciprocal Rank Fusion** merges rankings using rank positions alone:
 
-$$\text{RRF\_Score}(d \in D) = \sum_{m \in \{\text{dense}, \text{bm25}\}} \frac{1}{k + \text{rank}_m(d)} \quad \text{where } k = 60$$
+Because cosine similarity (ranging in $[-1, 1]$) and unbounded BM25 scores (ranging in $[0, \infty)$) lie on incompatible numerical scales, linear score combination requires fragile dataset-specific tuning. **Reciprocal Rank Fusion** merges rankings using rank positions alone:
+
+$$
+\mathrm{RRF}(d \in D) = \sum_{m \in \{\mathrm{dense}, \mathrm{bm25}\}} \frac{1}{k + \mathrm{rank}_m(d)} \quad \text{where } k = 60
+$$
 
 Documents appearing near the top of *both* dense and sparse retrievers receive a compounded boost, surfacing high-confidence matches to the top.
 
@@ -163,12 +174,12 @@ All four retrieval modes were benchmarked across the **300 human-judged test que
 ### Key Systems Engineering Takeaways
 
 1. **Why Hybrid RRF Beats Single-Modality Search (+5.6% Recall@10, +4.6% NDCG@10):**
-   - Interestingly, while `dense` has slightly higher Recall@10 than `bm25` (`0.7833` vs. `0.7740`), `bm25` achieves higher `MRR@10` (`0.6186` vs. `0.6047`) and `NDCG@10` (`0.6519` vs. `0.6451`) because exact scientific terminology places the right abstract at Rank #1 more often.
-   - Combining both via **Reciprocal Rank Fusion (`hybrid`)** captures complementary signals, driving **Recall@10 to `0.8393`** and **NDCG@10 to `0.6913`** at a modest `56.5 ms` per query.
+   * Interestingly, while `dense` has slightly higher Recall@10 than `bm25` (`0.7833` vs. `0.7740`), `bm25` achieves higher `MRR@10` (`0.6186` vs. `0.6047`) and `NDCG@10` (`0.6519` vs. `0.6451`) because exact scientific terminology places the right abstract at Rank #1 more often.
+   * Combining both via **Reciprocal Rank Fusion (`hybrid`)** captures complementary signals, driving **Recall@10 to `0.8393`** and **NDCG@10 to `0.6913`** at a modest `56.5 ms` per query.
 
 2. **Why Out-of-Domain Cross-Encoder Reranking Degrades Biomedical Accuracy & Latency:**
-   - A common industry misconception is that adding a Cross-Encoder always improves retrieval metrics. Benchmarking proved that `cross-encoder/ms-marco-MiniLM-L-6-v2` (trained on MS MARCO general web search queries) suffers from **covariate/domain shift** when scoring specialized biomedical claims in SciFact, slightly lowering `NDCG@10` from `0.6913` to `0.6681` while increasing latency by **13.6x (`56.5 ms` to `772.5 ms`)** on CPU.
-   - **Architectural Decision:** Grounded in this benchmark data, Sieve-RAG exposes `hybrid` (RRF) as the primary low-latency production path while retaining `hybrid_rerank` as an opt-in query parameter.
+   * A common industry misconception is that adding a Cross-Encoder always improves retrieval metrics. Benchmarking proved that `cross-encoder/ms-marco-MiniLM-L-6-v2` (trained on MS MARCO general web search queries) suffers from **covariate/domain shift** when scoring specialized biomedical claims in SciFact, slightly lowering `NDCG@10` from `0.6913` to `0.6681` while increasing latency by **13.6x (`56.5 ms` to `772.5 ms`)** on CPU.
+   * **Architectural Decision:** Grounded in this benchmark data, Sieve-RAG exposes `hybrid` (RRF) as the primary low-latency production path while retaining `hybrid_rerank` as an opt-in query parameter.
 
 ---
 
@@ -210,17 +221,20 @@ Once the FastAPI server is running, interactive Swagger UI documentation is avai
 ### 1. `GET /search` — Hybrid Retrieval with Semantic Caching
 
 **Query Parameters:**
-- `q` *(string, required)*: Scientific claim or search query (min 3 characters).
-- `top_k` *(int, default=5)*: Number of documents to return ($1 \le \text{top\_k} \le 20$).
-- `mode` *(enum, default=`hybrid_rerank`)*: One of `dense`, `bm25`, `hybrid`, or `hybrid_rerank`.
-- `use_cache` *(bool, default=`true`)*: Enable or bypass the two-tier Redis cache.
+
+* `q` *(string, required)*: Scientific claim or search query (min 3 characters).
+* `top_k` *(int, default=5)*: Number of documents to return (between `1` and `20`).
+* `mode` *(enum, default=`hybrid_rerank`)*: One of `dense`, `bm25`, `hybrid`, or `hybrid_rerank`.
+* `use_cache` *(bool, default=`true`)*: Enable or bypass the two-tier Redis cache.
 
 **Example Request:**
+
 ```bash
 curl "http://localhost:8000/search?q=0-dimensional%20biomaterials%20lack%20inductive%20properties&top_k=3&mode=hybrid"
 ```
 
 **Example Response (Warm Cache Hit):**
+
 ```json
 {
   "query": "0-dimensional biomaterials lack inductive properties",
@@ -242,11 +256,13 @@ curl "http://localhost:8000/search?q=0-dimensional%20biomaterials%20lack%20induc
 ### 2. `GET /metrics` — Live Redis Cache Telemetry
 
 **Example Request:**
+
 ```bash
 curl "http://localhost:8000/metrics"
 ```
 
 **Example Response:**
+
 ```json
 {
   "exact_hits": 14,
@@ -258,6 +274,7 @@ curl "http://localhost:8000/metrics"
 ```
 
 ### 3. `GET /health` — Service Health Check
+
 ```json
 {
   "status": "healthy",
@@ -270,12 +287,14 @@ curl "http://localhost:8000/metrics"
 ## 7. Quickstart & Local Setup
 
 ### Prerequisites
-- **Python 3.11+** (developed and tested on Python 3.13)
-- **Docker & Docker Compose** (for Qdrant and Redis containers)
+
+* **Python 3.11+** (developed and tested on Python 3.13)
+* **Docker & Docker Compose** (for Qdrant and Redis containers)
 
 ### Step-by-Step Installation
 
 **1. Clone the repository and create a virtual environment:**
+
 ```bash
 git clone https://github.com/Arshpreet-Singh-2005/Sieve-RAG.git
 cd Sieve-RAG
@@ -288,11 +307,13 @@ source .sieve/bin/activate
 ```
 
 **2. Install dependencies:**
+
 ```bash
 pip install -r requirements.txt
 ```
 
 **3. Start Qdrant and Redis via Docker Compose:**
+
 ```bash
 docker compose up -d
 python check.py
@@ -300,11 +321,13 @@ python check.py
 
 **4. Ingest the BEIR SciFact Corpus (5,183 documents):**
 Downloads `BeIR/scifact`, encodes all documents in batches of 128 using `all-MiniLM-L6-v2`, uploads 384-d vectors to Qdrant (`http://localhost:6333`), and serializes the `BM25Okapi` index to `data/bm25_index.pkl`.
+
 ```bash
 python -m app.ingest
 ```
 
 **5. Launch the FastAPI Gateway:**
+
 ```bash
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
@@ -315,12 +338,14 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 **Run the Automated Pytest Suite:**
 Verifies Reciprocal Rank Fusion ordering logic, end-to-end `/search` schema contracts, and Redis cache latency reductions:
+
 ```bash
 python -m pytest -v
 ```
 
 **Reproduce the Full BEIR SciFact Benchmark:**
 Evaluates `bm25`, `dense`, `hybrid`, and `hybrid_rerank` across all 300 test queries in `BeIR/scifact-qrels`:
+
 ```bash
 python -m eval.benchmark
 ```
@@ -328,9 +353,7 @@ python -m eval.benchmark
 ---
 
 ## License
+
 Distributed under the **MIT License**. See [`LICENSE`](LICENSE) for full details.
 
-**Author:** [Arshpreet Singh](https://github.com/Arshpreet-Singh-2005)
-
-
- [LinkedIn](https://linkedin.com/in/arshpreet-singh-56089531a)  
+**Author:** [Arshpreet Singh](https://github.com/Arshpreet-Singh-2005) · [LinkedIn](https://linkedin.com/in/arshpreet-singh-56089531a) · [LeetCode](https://leetcode.com/u/ARSHPREETSINGH2/)
